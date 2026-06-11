@@ -20,6 +20,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "firebase-admin": "^14.0.0",
     "rcon-client": "^4.2.5",
     "tiktok-live-connector": "^2.3.0-beta1",
     "ws": "^8.18.0"

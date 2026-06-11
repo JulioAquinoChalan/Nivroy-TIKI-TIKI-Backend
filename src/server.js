@@ -5,6 +5,9 @@ const express = require('express');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { applicationDefault, cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getAuth } = require('firebase-admin/auth');
+const { FieldValue, getFirestore } = require('firebase-admin/firestore');
 const { WebSocketServer } = require('ws');
 const tiktokLive = require('tiktok-live-connector');
 const { Rcon } = require('rcon-client');
@@ -12,8 +15,11 @@ const { Rcon } = require('rcon-client');
 const PORT = Number(process.env.PORT || 3000);
 const MAX_EVENTS = 100;
 const TikTokConnection = tiktokLive.WebcastPushConnection || tiktokLive.TikTokLiveConnection;
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const RULES_FILE = path.join(DATA_DIR, 'rules.json');
+const FIREBASE_WEB_API_KEY = process.env.FIREBASE_WEB_API_KEY || '';
+const FIREBASE_AUTH_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
+const FIREBASE_TOKEN_URL = 'https://securetoken.googleapis.com/v1/token';
+const FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL = process.env.FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL || '';
+const LEGACY_RULES_FILE = path.join(__dirname, '..', 'data', 'rules.json');
 
 const defaultRules = [
   { id: 'rose', eventType: 'gift', trigger: 'Rose', command: 'execute at @a run summon minecraft:creeper ~ ~ ~', target: 'Creeper', enabled: true },
@@ -22,24 +28,192 @@ const defaultRules = [
   { id: 'like', eventType: 'like', trigger: 'Like', command: 'execute at @a run summon minecraft:zombie ~ ~ ~', target: 'Zombie', enabled: true },
 ];
 
-function loadRules() {
+function getSeedRules() {
   try {
-    if (!fs.existsSync(RULES_FILE)) {
+    if (!fs.existsSync(LEGACY_RULES_FILE)) {
       return defaultRules;
     }
 
-    const parsed = JSON.parse(fs.readFileSync(RULES_FILE, 'utf8'));
-    const rules = Array.isArray(parsed) && parsed.length > 0 ? parsed : defaultRules;
-    return rules.map((rule) => normalizeRule(rule));
+    const parsed = JSON.parse(fs.readFileSync(LEGACY_RULES_FILE, 'utf8'));
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : defaultRules;
   } catch (error) {
-    console.error(`Could not load rules: ${error.message}`);
+    console.error(`Could not load legacy rules seed: ${error.message}`);
     return defaultRules;
   }
 }
 
-function persistRules() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(RULES_FILE, JSON.stringify(state.rules, null, 2));
+function initializeFirebaseAdmin() {
+  if (getApps().length > 0) {
+    return;
+  }
+
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+
+  if (serviceAccountJson) {
+    initializeApp({
+      credential: cert(JSON.parse(serviceAccountJson)),
+    });
+    return;
+  }
+
+  if (serviceAccountPath) {
+    const resolvedPath = path.resolve(serviceAccountPath);
+    initializeApp({
+      credential: cert(require(resolvedPath)),
+    });
+    return;
+  }
+
+  initializeApp({
+    credential: applicationDefault(),
+  });
+}
+
+initializeFirebaseAdmin();
+
+const auth = getAuth();
+const firestore = getFirestore();
+
+function getUserRulesCollection(uid) {
+  return firestore.collection('users').doc(uid).collection('rules');
+}
+
+async function loadUserRules(uid) {
+  const snapshot = await getUserRulesCollection(uid).get();
+  return snapshot.docs.map((doc) => normalizeRule({ id: doc.id, ...doc.data() }));
+}
+
+async function ensureUserRules(uid) {
+  const rules = await loadUserRules(uid);
+  if (rules.length > 0) {
+    return rules;
+  }
+
+  const batch = firestore.batch();
+  const now = FieldValue.serverTimestamp();
+  for (const rule of getSeedRules().map((item) => normalizeRule(item))) {
+    batch.set(getUserRulesCollection(uid).doc(rule.id), {
+      ...rule,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  await batch.commit();
+  return loadUserRules(uid);
+}
+
+async function setActiveUser(user) {
+  if (!user?.uid) {
+    state.currentUserId = '';
+    state.currentUserEmail = '';
+    state.rules = [];
+    return;
+  }
+
+  if (state.currentUserId === user.uid && state.rules.length > 0) {
+    return;
+  }
+
+  state.currentUserId = user.uid;
+  state.currentUserEmail = user.email || '';
+  state.rules = await ensureUserRules(user.uid);
+}
+
+function getBearerToken(req) {
+  const header = req.get('authorization') || '';
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : '';
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const token = getBearerToken(req);
+    if (!token) {
+      res.status(401).json({ ok: false, error: 'Authorization token is required.' });
+      return;
+    }
+
+    req.user = await auth.verifyIdToken(token);
+    next();
+  } catch (error) {
+    res.status(401).json({ ok: false, error: 'Invalid or expired authorization token.' });
+  }
+}
+
+async function requireVerifiedEmail(req, res, next) {
+  if (req.user?.email_verified !== true) {
+    res.status(403).json({ ok: false, error: 'Email verification is required.' });
+    return;
+  }
+  await setActiveUser(req.user);
+  next();
+}
+
+function requireFirebaseWebApiKey() {
+  if (!FIREBASE_WEB_API_KEY) {
+    throw new Error('FIREBASE_WEB_API_KEY is required.');
+  }
+}
+
+async function callFirebaseAuth(pathname, body) {
+  requireFirebaseWebApiKey();
+  const response = await fetch(`${FIREBASE_AUTH_BASE_URL}/${pathname}?key=${FIREBASE_WEB_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const message = data?.error?.message || `Firebase Auth returned ${response.status}`;
+    console.error(`Firebase Auth ${pathname} failed: ${message}`);
+    const error = new Error(message.replaceAll('_', ' ').toLowerCase());
+    error.firebaseCode = message;
+    throw error;
+  }
+  return data;
+}
+
+async function sendEmailVerification(idToken) {
+  const request = {
+    requestType: 'VERIFY_EMAIL',
+    idToken,
+  };
+
+  if (FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL) {
+    request.continueUrl = FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL;
+  }
+
+  await callFirebaseAuth('accounts:sendOobCode', request);
+}
+
+async function refreshFirebaseToken(refreshToken) {
+  requireFirebaseWebApiKey();
+  const response = await fetch(`${FIREBASE_TOKEN_URL}?key=${FIREBASE_WEB_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }).toString(),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const message = data?.error?.message || `Firebase token refresh returned ${response.status}`;
+    throw new Error(message.replaceAll('_', ' ').toLowerCase());
+  }
+  return data;
+}
+
+function authPayload(data) {
+  return {
+    idToken: data.idToken,
+    refreshToken: data.refreshToken,
+    expiresIn: Number(data.expiresIn || 3600),
+    uid: data.localId,
+    email: data.email || '',
+    emailVerified: data.emailVerified === true,
+  };
 }
 
 function getActiveRules() {
@@ -284,7 +458,7 @@ function renderRulesOverlay() {
 
     async function loadRules() {
       try {
-        const response = await fetch('/rules?overlay=1&t=' + Date.now(), { cache: 'no-store' });
+        const response = await fetch('/overlay/rules.json?t=' + Date.now(), { cache: 'no-store' });
         const rules = await response.json();
         setRules(rules);
       } catch (error) {
@@ -329,10 +503,12 @@ function renderRulesOverlay() {
 const state = {
   tiktokConnected: false,
   minecraftConnected: false,
+  currentUserId: '',
+  currentUserEmail: '',
   currentTikTokUser: process.env.TIKTOK_USERNAME || '',
   minecraftHost: process.env.MINECRAFT_HOST || '127.0.0.1',
   minecraftPort: Number(process.env.MINECRAFT_PORT || 25575),
-  rules: loadRules(),
+  rules: [],
   events: [],
 };
 
@@ -412,23 +588,35 @@ function normalizeRule(input) {
   };
 }
 
-function saveRule(rule) {
+async function saveRule(uid, rule) {
   const existingIndex = state.rules.findIndex(
     (item) => (item.eventType || 'gift') === rule.eventType
       && item.trigger.toLowerCase() === rule.trigger.toLowerCase(),
   );
 
+  const now = FieldValue.serverTimestamp();
   if (existingIndex >= 0) {
-    state.rules[existingIndex] = { ...state.rules[existingIndex], ...rule };
+    const nextRule = { ...state.rules[existingIndex], ...rule };
+    state.rules[existingIndex] = nextRule;
+    await getUserRulesCollection(uid).doc(nextRule.id).set({
+      ...nextRule,
+      updatedAt: now,
+    }, { merge: true });
   } else {
     state.rules.push(rule);
+    await getUserRulesCollection(uid).doc(rule.id).set({
+      ...rule,
+      createdAt: now,
+      updatedAt: now,
+    });
   }
-  persistRules();
 
   addEvent('rule_saved', {
     source: 'rules',
     detail: `${rule.trigger} -> ${rule.command}`,
   });
+
+  return existingIndex >= 0 ? state.rules[existingIndex] : rule;
 }
 
 function findRule(eventType, trigger) {
@@ -742,6 +930,8 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'nivroy-tiki-tiki-backend',
+    currentUserId: state.currentUserId,
+    currentUserEmail: state.currentUserEmail,
     tiktokConnected: state.tiktokConnected,
     minecraftConnected: state.minecraftConnected,
     minecraftHost: state.minecraftHost,
@@ -759,22 +949,122 @@ app.get(['/overlay', '/overlay/rules'], (req, res) => {
   res.type('html').send(renderRulesOverlay());
 });
 
-app.get('/rules', (req, res) => {
+app.get('/overlay/rules.json', (req, res) => {
   disableCache(res);
   res.json(state.rules);
 });
 
-app.post('/rules', (req, res) => {
+app.post('/auth/register', async (req, res) => {
   try {
-    const rule = normalizeRule(req.body);
-    saveRule(rule);
-    res.json({ ok: true, rule });
+    const email = String(req.body.email || '').trim();
+    const password = String(req.body.password || '');
+    let data;
+    try {
+      data = await callFirebaseAuth('accounts:signUp', {
+        email,
+        password,
+        returnSecureToken: true,
+      });
+    } catch (error) {
+      if (error.firebaseCode !== 'EMAIL_EXISTS') {
+        throw error;
+      }
+
+      data = await callFirebaseAuth('accounts:signInWithPassword', {
+        email,
+        password,
+        returnSecureToken: true,
+      });
+    }
+
+    if (data.emailVerified !== true) {
+      await sendEmailVerification(data.idToken);
+    }
+    res.json({ ok: true, ...authPayload(data) });
   } catch (error) {
     res.status(400).json({ ok: false, error: normalizeError(error) });
   }
 });
 
-app.put('/rules/:id', (req, res) => {
+app.post('/auth/login', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim();
+    const password = String(req.body.password || '');
+    const data = await callFirebaseAuth('accounts:signInWithPassword', {
+      email,
+      password,
+      returnSecureToken: true,
+    });
+    if (data.emailVerified === true) {
+      await setActiveUser({ uid: data.localId, email: data.email });
+    }
+    res.json({ ok: true, ...authPayload(data) });
+  } catch (error) {
+    res.status(401).json({ ok: false, error: normalizeError(error) });
+  }
+});
+
+app.post('/auth/refresh', async (req, res) => {
+  try {
+    const refreshToken = String(req.body.refreshToken || '');
+    const data = await refreshFirebaseToken(refreshToken);
+    const user = await auth.getUser(data.user_id);
+    if (user.emailVerified === true) {
+      await setActiveUser({ uid: data.user_id, email: user.email });
+    }
+    res.json({
+      ok: true,
+      idToken: data.id_token,
+      refreshToken: data.refresh_token,
+      expiresIn: Number(data.expires_in || 3600),
+      uid: data.user_id,
+      email: user.email || '',
+      emailVerified: user.emailVerified === true,
+    });
+  } catch (error) {
+    res.status(401).json({ ok: false, error: normalizeError(error) });
+  }
+});
+
+app.post('/auth/send-email-verification', requireAuth, async (req, res) => {
+  try {
+    await sendEmailVerification(getBearerToken(req));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: normalizeError(error) });
+  }
+});
+
+app.get('/auth/me', requireAuth, async (req, res) => {
+  try {
+    const user = await auth.getUser(req.user.uid);
+    res.json({
+      ok: true,
+      uid: user.uid,
+      email: user.email || '',
+      emailVerified: user.emailVerified === true,
+    });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: normalizeError(error) });
+  }
+});
+
+app.get('/rules', requireAuth, requireVerifiedEmail, (req, res) => {
+  disableCache(res);
+  res.json(state.rules);
+});
+
+app.post('/rules', requireAuth, requireVerifiedEmail, async (req, res) => {
+  try {
+    const rule = normalizeRule(req.body);
+    const savedRule = await saveRule(req.user.uid, rule);
+    res.json({ ok: true, rule: savedRule });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: normalizeError(error) });
+  }
+});
+
+app.put('/rules/:id', requireAuth, requireVerifiedEmail, async (req, res) => {
   try {
     const index = state.rules.findIndex((rule) => rule.id === req.params.id);
     if (index < 0) {
@@ -784,7 +1074,10 @@ app.put('/rules/:id', (req, res) => {
 
     const rule = normalizeRule({ ...req.body, id: req.params.id });
     state.rules[index] = rule;
-    persistRules();
+    await getUserRulesCollection(req.user.uid).doc(rule.id).set({
+      ...rule,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
     addEvent('rule_saved', {
       source: 'rules',
       detail: `${rule.trigger} -> ${rule.command}`,
@@ -796,7 +1089,7 @@ app.put('/rules/:id', (req, res) => {
   }
 });
 
-app.patch('/rules/:id/enabled', (req, res) => {
+app.patch('/rules/:id/enabled', requireAuth, requireVerifiedEmail, async (req, res) => {
   const rule = state.rules.find((item) => item.id === req.params.id);
   if (!rule) {
     res.status(404).json({ ok: false, error: 'Rule not found.' });
@@ -804,7 +1097,10 @@ app.patch('/rules/:id/enabled', (req, res) => {
   }
 
   rule.enabled = req.body.enabled !== false;
-  persistRules();
+  await getUserRulesCollection(req.user.uid).doc(rule.id).set({
+    enabled: rule.enabled,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
   addEvent('rule_updated', {
     source: 'rules',
     detail: `${rule.trigger} ${rule.enabled ? 'enabled' : 'disabled'}`,
@@ -813,10 +1109,10 @@ app.patch('/rules/:id/enabled', (req, res) => {
   res.json({ ok: true, rule });
 });
 
-app.delete('/rules/:id', (req, res) => {
+app.delete('/rules/:id', requireAuth, requireVerifiedEmail, async (req, res) => {
   const before = state.rules.length;
   state.rules = state.rules.filter((rule) => rule.id !== req.params.id);
-  persistRules();
+  await getUserRulesCollection(req.user.uid).doc(req.params.id).delete();
   addEvent('rule_updated', {
     source: 'rules',
     detail: `Rule ${req.params.id} deleted`,
@@ -824,7 +1120,7 @@ app.delete('/rules/:id', (req, res) => {
   res.json({ ok: true, deleted: before !== state.rules.length });
 });
 
-app.post('/minecraft/command', async (req, res) => {
+app.post('/minecraft/command', requireAuth, requireVerifiedEmail, async (req, res) => {
   try {
     const result = await executeMinecraftCommand(req.body.command, req.body.username, {
       host: req.body.minecraftHost,
@@ -838,7 +1134,7 @@ app.post('/minecraft/command', async (req, res) => {
   }
 });
 
-app.post('/minecraft/connect', async (req, res) => {
+app.post('/minecraft/connect', requireAuth, requireVerifiedEmail, async (req, res) => {
   try {
     const connection = await getRconConnection({
       host: req.body.minecraftHost,
@@ -857,7 +1153,7 @@ app.post('/minecraft/connect', async (req, res) => {
   }
 });
 
-app.post('/tiktok/connect', async (req, res) => {
+app.post('/tiktok/connect', requireAuth, requireVerifiedEmail, async (req, res) => {
   try {
     const result = await connectTikTok(req.body.username);
     res.json({ ok: true, ...result });
@@ -868,7 +1164,7 @@ app.post('/tiktok/connect', async (req, res) => {
   }
 });
 
-app.post('/tiktok/disconnect', async (req, res) => {
+app.post('/tiktok/disconnect', requireAuth, requireVerifiedEmail, async (req, res) => {
   try {
     await disconnectTikTok();
     res.json({ ok: true });
