@@ -1,0 +1,58 @@
+[
+  {
+    "id": "heart-me",
+    "eventType": "gift",
+    "trigger": "Heart Me",
+    "command": "execute at @a run summon minecraft:zombie ~ ~ ~",
+    "target": "Zombie",
+    "enabled": true
+  },
+  {
+    "id": "gg",
+    "eventType": "gift",
+    "trigger": "GG",
+    "command": "execute at @a run summon minecraft:skeleton ~ ~ ~",
+    "target": "Skeleton",
+    "enabled": true
+  },
+  {
+    "id": "like",
+    "eventType": "like",
+    "trigger": "Like",
+    "command": "execute at @a run summon minecraft:zombie ~ ~ ~",
+    "target": "Zombie",
+    "enabled": true
+  },
+  {
+    "id": "1781119454995-alex",
+    "eventType": "chat",
+    "trigger": "Alex",
+    "command": "execute as @r at @s run summon minecraft:tnt ~ ~2 ~ {Fuse:40}",
+    "target": "TNT",
+    "enabled": true
+  },
+  {
+    "id": "1781121937362-share",
+    "eventType": "share",
+    "trigger": "Share",
+    "command": "execute as @a at @s run summon minecraft:lightning_bolt ~ ~2 ~",
+    "target": "Lightning",
+    "enabled": true
+  },
+  {
+    "id": "1781123329415-member",
+    "eventType": "member",
+    "trigger": "Member",
+    "command": "execute as @a at @s run summon minecraft:creeper ~ ~ ~",
+    "target": "Creeper",
+    "enabled": true
+  },
+  {
+    "id": "1781195032278-rose",
+    "eventType": "gift",
+    "trigger": "Rose",
+    "command": "execute as @a at @s run summon minecraft:zombie ^ ^ ^-2 {Tags:[\"nivroy_equipped_spawn\"]}\nexecute as @a at @s run item replace entity @e[type=minecraft:zombie,tag=nivroy_equipped_spawn,sort=nearest,limit=1,distance=..8] armor.head with minecraft:diamond_helmet\nexecute as @a at @s run item replace entity @e[type=minecraft:zombie,tag=nivroy_equipped_spawn,sort=nearest,limit=1,distance=..8] armor.chest with minecraft:diamond_chestplate\nexecute as @a at @s run item replace entity @e[type=minecraft:zombie,tag=nivroy_equipped_spawn,sort=nearest,limit=1,distance=..8] armor.legs with minecraft:iron_leggings\nexecute as @a at @s run item replace entity @e[type=minecraft:zombie,tag=nivroy_equipped_spawn,sort=nearest,limit=1,distance=..8] armor.feet with minecraft:golden_boots\nexecute as @a at @s run item replace entity @e[type=minecraft:zombie,tag=nivroy_equipped_spawn,sort=nearest,limit=1,distance=..8] weapon.mainhand with minecraft:iron_sword\nexecute as @a at @s run tag @e[type=minecraft:zombie,tag=nivroy_equipped_spawn,sort=nearest,limit=1,distance=..8] remove nivroy_equipped_spawn",
+    "target": "Zombie ful diamont",
+    "enabled": true
+  }
+]

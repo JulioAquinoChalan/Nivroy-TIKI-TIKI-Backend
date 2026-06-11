@@ -1,0 +1,27 @@
+{
+  "name": "nivroy-tiki-tiki-backend",
+  "version": "0.1.0",
+  "description": "Backend for Nivroy TIKI-TIKI: TikTok Live events to Minecraft Paper commands.",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "tunnel": "npx --yes cloudflared tunnel --edge-ip-version 4 --protocol http2 --url http://localhost:3000"
+  },
+  "keywords": [
+    "tiktok",
+    "minecraft",
+    "rcon",
+    "websocket"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "rcon-client": "^4.2.5",
+    "tiktok-live-connector": "^2.3.0-beta1",
+    "ws": "^8.18.0"
+  }
+}
