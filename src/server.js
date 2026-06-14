@@ -10,7 +10,6 @@ const { getAuth } = require('firebase-admin/auth');
 const { FieldValue, getFirestore } = require('firebase-admin/firestore');
 const { WebSocketServer } = require('ws');
 const tiktokLive = require('tiktok-live-connector');
-const { Rcon } = require('rcon-client');
 
 const PORT = Number(process.env.PORT || 3000);
 const MAX_EVENTS = 100;
@@ -241,6 +240,15 @@ function getActiveRules() {
   return state.rules.filter((rule) => rule.enabled !== false);
 }
 
+async function getOverlayRules(uid) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) {
+    return getActiveRules();
+  }
+
+  return (await loadUserRules(targetUid)).filter((rule) => rule.enabled !== false);
+}
+
 function disableCache(res) {
   res.set({
     'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
@@ -259,8 +267,9 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-function renderRulesOverlay() {
-  const rulesJson = JSON.stringify(getActiveRules());
+function renderRulesOverlay(rules, uid = '') {
+  const rulesJson = JSON.stringify(rules.filter((rule) => rule.enabled !== false));
+  const uidJson = JSON.stringify(String(uid || '').trim());
 
   return `<!doctype html>
 <html lang="es">
@@ -389,6 +398,7 @@ function renderRulesOverlay() {
   </main>
   <script>
     const initialRules = ${rulesJson};
+    const overlayUid = ${uidJson};
     const pageSize = 6;
     let activeRules = initialRules;
     let pageIndex = 0;
@@ -479,7 +489,11 @@ function renderRulesOverlay() {
 
     async function loadRules() {
       try {
-        const response = await fetch('/overlay/rules.json?t=' + Date.now(), { cache: 'no-store' });
+        const params = new URLSearchParams({ t: Date.now().toString() });
+        if (overlayUid) {
+          params.set('uid', overlayUid);
+        }
+        const response = await fetch('/overlay/rules.json?' + params.toString(), { cache: 'no-store' });
         const rules = await response.json();
         setRules(rules);
       } catch (error) {
@@ -523,20 +537,14 @@ function renderRulesOverlay() {
 
 const state = {
   tiktokConnected: false,
-  minecraftConnected: false,
   currentUserId: '',
   currentUserEmail: '',
   currentTikTokUser: process.env.TIKTOK_USERNAME || '',
-  minecraftHost: '127.0.0.1',
-  minecraftPort: 25575,
-  minecraftPassword: '',
   rules: [],
   events: [],
 };
 
 let tiktokConnection = null;
-let rconConnection = null;
-let rconConfig = null;
 
 const app = express();
 const server = http.createServer(app);
@@ -664,32 +672,6 @@ async function saveRule(uid, rule) {
   return existingIndex >= 0 ? state.rules[existingIndex] : rule;
 }
 
-function findRule(eventType, trigger) {
-  return state.rules.find((rule) => (
-    rule.enabled !== false
-    &&
-    (rule.eventType || 'gift') === eventType
-    && rule.trigger.toLowerCase() === String(trigger).toLowerCase()
-  ));
-}
-
-function findLikeRule() {
-  return findRule('like', 'Like')
-    || state.rules.find((rule) => rule.enabled !== false && (rule.eventType || 'gift') === 'like');
-}
-
-async function executeRule(rule, username) {
-  try {
-    await executeMinecraftCommand(rule.command, username);
-  } catch (error) {
-    addEvent('error', {
-      source: 'minecraft',
-      user: username,
-      detail: normalizeError(error),
-    });
-  }
-}
-
 function addEvent(type, payload = {}) {
   const event = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -713,115 +695,6 @@ function broadcast(message) {
   }
 }
 
-function getMinecraftConfig(options = {}) {
-  const host = String(options.host || state.minecraftHost || '127.0.0.1').trim();
-  const port = Number(options.port || state.minecraftPort || 25575);
-  const password = String(
-    options.password
-      ?? state.minecraftPassword
-      ?? '',
-  );
-
-  if (!host) {
-    throw new Error('Minecraft host is required.');
-  }
-
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('Minecraft port must be a valid TCP port.');
-  }
-
-  if (!password) {
-    throw new Error('Minecraft RCON password is required.');
-  }
-
-  return {
-    host,
-    port,
-    password,
-  };
-}
-
-async function closeRconConnection() {
-  if (!rconConnection) {
-    return;
-  }
-
-  const connection = rconConnection;
-  rconConnection = null;
-  rconConfig = null;
-  state.minecraftConnected = false;
-
-  try {
-    await connection.end();
-  } catch (error) {
-    addEvent('error', { source: 'minecraft', detail: normalizeError(error) });
-  }
-}
-
-async function getRconConnection(options = {}) {
-  const nextConfig = getMinecraftConfig(options);
-  const configKey = `${nextConfig.host}:${nextConfig.port}`;
-  const connectionKey = `${configKey}:${nextConfig.password}`;
-
-  if (rconConnection && rconConfig === connectionKey) {
-    return rconConnection;
-  }
-
-  await closeRconConnection();
-
-  rconConnection = await Rcon.connect(nextConfig);
-  rconConfig = connectionKey;
-
-  state.minecraftConnected = true;
-  state.minecraftHost = nextConfig.host;
-  state.minecraftPort = nextConfig.port;
-  state.minecraftPassword = nextConfig.password;
-  addEvent('connected', {
-    source: 'minecraft',
-    detail: `Minecraft RCON connected to ${configKey}`,
-  });
-
-  rconConnection.on('end', () => {
-    rconConnection = null;
-    rconConfig = null;
-    state.minecraftConnected = false;
-    addEvent('disconnected', { source: 'minecraft', detail: 'Minecraft RCON disconnected' });
-  });
-
-  rconConnection.on('error', (error) => {
-    state.minecraftConnected = false;
-    addEvent('error', { source: 'minecraft', detail: normalizeError(error) });
-  });
-
-  return rconConnection;
-}
-
-async function executeMinecraftCommand(command, username, minecraftOptions = {}) {
-  const safeUser = sanitizeMinecraftName(username);
-  const commandsToRun = getMinecraftCommands(command).map((item) => (
-    item.replaceAll('{user}', safeUser).trim()
-  ));
-
-  if (commandsToRun.length === 0) {
-    throw new Error('Minecraft command is required.');
-  }
-
-  const rcon = await getRconConnection(minecraftOptions);
-  const responses = [];
-  for (const item of commandsToRun) {
-    responses.push(await rcon.send(item));
-  }
-  const commandToRun = commandsToRun.join('\n');
-
-  addEvent('minecraft_command_executed', {
-    user: safeUser,
-    detail: commandToRun,
-    response: responses.join('\n'),
-  });
-
-  return { command: commandToRun, response: responses };
-}
-
 function attachTikTokHandlers(connection) {
   connection.on('chat', (data) => {
     const safeUser = sanitizeMinecraftName(getTikTokUniqueId(data));
@@ -831,17 +704,6 @@ function attachTikTokHandlers(connection) {
       detail: comment,
       raw: data,
     });
-
-    const rule = findRule('chat', comment);
-    if (rule) {
-      executeRule(rule, safeUser);
-    } else if (comment) {
-      addEvent('rule_missed', {
-        source: 'rules',
-        user: safeUser,
-        detail: `No rule for chat: ${comment}`,
-      });
-    }
   });
 
   connection.on('like', (data) => {
@@ -851,14 +713,9 @@ function attachTikTokHandlers(connection) {
       detail: `${data.likeCount || 1} likes`,
       raw: data,
     });
-
-    const rule = findLikeRule();
-    if (rule) {
-      executeRule(rule, safeUser);
-    }
   });
 
-  connection.on('gift', async (data) => {
+  connection.on('gift', (data) => {
     const giftName = getTikTokGiftName(data);
     const safeUser = sanitizeMinecraftName(getTikTokUniqueId(data));
 
@@ -867,18 +724,6 @@ function attachTikTokHandlers(connection) {
       detail: giftName,
       raw: data,
     });
-
-    const rule = findRule('gift', giftName);
-    if (!rule) {
-      addEvent('rule_missed', {
-        source: 'rules',
-        user: safeUser,
-        detail: `No rule for gift: ${giftName}`,
-      });
-      return;
-    }
-
-    await executeRule(rule, safeUser);
   });
 
   connection.on('follow', (data) => {
@@ -888,11 +733,6 @@ function attachTikTokHandlers(connection) {
       detail: 'New follower',
       raw: data,
     });
-
-    const rule = findRule('follow', 'Follow');
-    if (rule) {
-      executeRule(rule, safeUser);
-    }
   });
 
   connection.on('member', (data) => {
@@ -902,11 +742,6 @@ function attachTikTokHandlers(connection) {
       detail: 'Joined the live',
       raw: data,
     });
-
-    const rule = findRule('member', 'Member');
-    if (rule) {
-      executeRule(rule, safeUser);
-    }
   });
 
   connection.on('share', (data) => {
@@ -916,11 +751,6 @@ function attachTikTokHandlers(connection) {
       detail: 'Shared the live',
       raw: data,
     });
-
-    const rule = findRule('share', 'Share');
-    if (rule) {
-      executeRule(rule, safeUser);
-    }
   });
 
   connection.on('disconnected', () => {
@@ -989,9 +819,6 @@ app.get('/health', (req, res) => {
     currentUserId: state.currentUserId,
     currentUserEmail: state.currentUserEmail,
     tiktokConnected: state.tiktokConnected,
-    minecraftConnected: state.minecraftConnected,
-    minecraftHost: state.minecraftHost,
-    minecraftPort: state.minecraftPort,
     currentTikTokUser: state.currentTikTokUser,
   });
 });
@@ -1000,14 +827,24 @@ app.get('/events', (req, res) => {
   res.json(state.events);
 });
 
-app.get(['/overlay', '/overlay/rules'], (req, res) => {
-  disableCache(res);
-  res.type('html').send(renderRulesOverlay());
+app.get(['/overlay', '/overlay/rules'], async (req, res) => {
+  try {
+    disableCache(res);
+    const uid = req.query.uid;
+    const rules = await getOverlayRules(uid);
+    res.type('html').send(renderRulesOverlay(rules, uid));
+  } catch (error) {
+    res.status(400).type('html').send('Could not load overlay rules.');
+  }
 });
 
-app.get('/overlay/rules.json', (req, res) => {
-  disableCache(res);
-  res.json(state.rules);
+app.get('/overlay/rules.json', async (req, res) => {
+  try {
+    disableCache(res);
+    res.json(await getOverlayRules(req.query.uid));
+  } catch (error) {
+    res.status(400).json({ ok: false, error: normalizeError(error) });
+  }
 });
 
 app.post('/auth/register', async (req, res) => {
@@ -1174,41 +1011,6 @@ app.delete('/rules/:id', requireAuth, requireVerifiedEmail, async (req, res) => 
     detail: `Rule ${req.params.id} deleted`,
   });
   res.json({ ok: true, deleted: before !== state.rules.length });
-});
-
-app.post('/minecraft/command', requireAuth, requireVerifiedEmail, async (req, res) => {
-  try {
-    const result = await executeMinecraftCommand(req.body.command, req.body.username, {
-      host: req.body.minecraftHost,
-      port: req.body.minecraftPort,
-      password: req.body.minecraftRconPassword,
-    });
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    const detail = normalizeError(error);
-    addEvent('error', { source: 'minecraft', detail });
-    res.status(400).json({ ok: false, error: detail });
-  }
-});
-
-app.post('/minecraft/connect', requireAuth, requireVerifiedEmail, async (req, res) => {
-  try {
-    const connection = await getRconConnection({
-      host: req.body.minecraftHost,
-      port: req.body.minecraftPort,
-      password: req.body.minecraftRconPassword,
-    });
-    res.json({
-      ok: true,
-      connected: Boolean(connection),
-      minecraftHost: state.minecraftHost,
-      minecraftPort: state.minecraftPort,
-    });
-  } catch (error) {
-    const detail = normalizeError(error);
-    addEvent('error', { source: 'minecraft', detail });
-    res.status(400).json({ ok: false, error: detail });
-  }
 });
 
 app.post('/tiktok/connect', requireAuth, requireVerifiedEmail, async (req, res) => {

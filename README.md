@@ -1,11 +1,10 @@
 # Nivroy TIKI-TIKI Backend
 
-Backend Node.js + Express para conectar eventos de TikTok Live con comandos de Minecraft Paper por RCON.
+Backend Node.js + Express para autenticar usuarios, guardar reglas, conectar TikTok Live y servir el overlay.
 
 ## Requisitos
 
 - Node.js 20 o superior
-- Minecraft Paper con RCON habilitado
 - Proyecto Firebase con Authentication por email/password y Firestore habilitados
 
 ## Instalacion
@@ -71,7 +70,7 @@ flutter run --dart-define=BACKEND_URL=https://nivroy-tiki-tiki-backend.onrender.
 
 ## Endpoints
 
-- `GET /health`: estado del backend, TikTok y Minecraft.
+- `GET /health`: estado del backend y TikTok.
 - `GET /events`: ultimos 100 eventos en memoria.
 - `POST /auth/register`: registra email/password y envia verificacion de correo.
 - `POST /auth/login`: inicia sesion con email/password.
@@ -81,23 +80,11 @@ flutter run --dart-define=BACKEND_URL=https://nivroy-tiki-tiki-backend.onrender.
 - `GET /rules`: reglas del usuario autenticado en Firestore.
 - `POST /rules`: crea o reemplaza una regla por trigger para el usuario autenticado.
 - `DELETE /rules/:id`: elimina una regla del usuario autenticado.
-- `POST /minecraft/command`: ejecuta un comando RCON.
 - `POST /tiktok/connect`: conecta a TikTok Live.
 - `POST /tiktok/disconnect`: desconecta TikTok Live.
 - `GET /overlay/rules`: overlay HTML para agregar como Browser Source en TikTok Live Studio.
 
-Las rutas de `rules`, Minecraft y TikTok requieren `Authorization: Bearer <idToken>` y correo verificado.
-
-Ejemplo:
-
-```bash
-curl -X POST http://localhost:3000/minecraft/command \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ID_TOKEN" \
-  -d '{"command":"say Hola {user}","username":"demo_user","minecraftHost":"127.0.0.1","minecraftPort":25575,"minecraftRconPassword":"change_me"}'
-```
-
-`minecraftHost`, `minecraftPort` y `minecraftRconPassword` los envia el frontend segun el servidor de cada usuario.
+Las rutas de `rules` y TikTok requieren `Authorization: Bearer <idToken>` y correo verificado.
 
 ## WebSocket
 
@@ -111,8 +98,9 @@ El WebSocket corre en el mismo host y puerto del backend. Emite eventos JSON:
 - `follow`
 - `member`
 - `share`
-- `minecraft_command_executed`
 - `error`
+
+Los comandos de Minecraft se ejecutan desde el frontend usando ServerTap.
 
 ## Reglas iniciales
 

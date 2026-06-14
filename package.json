@@ -1,7 +1,7 @@
 {
   "name": "nivroy-tiki-tiki-backend",
   "version": "0.1.0",
-  "description": "Backend for Nivroy TIKI-TIKI: TikTok Live events to Minecraft Paper commands.",
+  "description": "Backend for Nivroy TIKI-TIKI: TikTok Live events, auth, rules, and overlay.",
   "main": "src/server.js",
   "engines": {
     "node": ">=20 <23"
@@ -14,7 +14,6 @@
   "keywords": [
     "tiktok",
     "minecraft",
-    "rcon",
     "websocket"
   ],
   "author": "",
@@ -24,7 +23,6 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "firebase-admin": "^14.0.0",
-    "rcon-client": "^4.2.5",
     "tiktok-live-connector": "^2.3.0-beta1",
     "ws": "^8.18.0"
   }
