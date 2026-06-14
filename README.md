@@ -22,12 +22,10 @@ Configura `.env` sin usar credenciales reales en archivos versionados:
 
 ```bash
 PORT=3000
+CORS_ORIGIN=*
 FIREBASE_WEB_API_KEY=your_firebase_web_api_key
 FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 TIKTOK_USERNAME=demo_user
-MINECRAFT_HOST=127.0.0.1
-MINECRAFT_PORT=25575
-MINECRAFT_RCON_PASSWORD=change_me
 ```
 
 Para Firebase necesitas:
@@ -35,8 +33,41 @@ Para Firebase necesitas:
 - `FIREBASE_WEB_API_KEY`: esta en Firebase Console > Project settings > General > Web API Key.
 - `FIREBASE_SERVICE_ACCOUNT_PATH`: ruta local a un JSON de service account con permisos de Firebase Admin/Firestore.
 - Como alternativa puedes usar `FIREBASE_SERVICE_ACCOUNT_JSON` con el JSON completo en una variable de entorno.
+- En Render se recomienda usar `FIREBASE_SERVICE_ACCOUNT_JSON` o `FIREBASE_SERVICE_ACCOUNT_BASE64`, no una ruta local.
+- `CORS_ORIGIN`: usa `*` durante pruebas. En produccion puedes poner el dominio del frontend, o varios separados por coma.
 
 No subas el JSON de service account al repo. El backend ya ignora `firebase-service-account*.json`.
+
+## Despliegue en Render
+
+Este repo incluye `render.yaml` para crear un Web Service en Render.
+
+1. Sube el backend a GitHub.
+2. En Render, crea un nuevo Blueprint desde el repo o un Web Service manual apuntando a esta carpeta.
+3. Usa:
+   - Build command: `npm ci`
+   - Start command: `npm start`
+   - Health check path: `/health`
+4. Configura estas variables en Render:
+   - `FIREBASE_WEB_API_KEY`
+   - `FIREBASE_SERVICE_ACCOUNT_JSON` con el JSON completo de service account, o `FIREBASE_SERVICE_ACCOUNT_BASE64`
+   - `FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL` si quieres redirigir luego de verificar correo
+   - `TIKTOK_USERNAME`
+   - `CORS_ORIGIN`
+
+Render asigna `PORT` automaticamente. No hace falta configurarlo.
+
+Para generar `FIREBASE_SERVICE_ACCOUNT_BASE64` en PowerShell:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes(".\firebase-service-account.json"))
+```
+
+Luego actualiza el frontend con la URL publica de Render, por ejemplo:
+
+```bash
+flutter run --dart-define=BACKEND_URL=https://nivroy-tiki-tiki-backend.onrender.com
+```
 
 ## Endpoints
 
@@ -63,10 +94,10 @@ Ejemplo:
 curl -X POST http://localhost:3000/minecraft/command \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ID_TOKEN" \
-  -d '{"command":"say Hola {user}","username":"demo_user","minecraftHost":"127.0.0.1","minecraftPort":25575}'
+  -d '{"command":"say Hola {user}","username":"demo_user","minecraftHost":"127.0.0.1","minecraftPort":25575,"minecraftRconPassword":"change_me"}'
 ```
 
-Si `minecraftHost` o `minecraftPort` no vienen en el request, el backend usa `MINECRAFT_HOST` y `MINECRAFT_PORT` desde `.env`.
+`minecraftHost`, `minecraftPort` y `minecraftRconPassword` los envia el frontend segun el servidor de cada usuario.
 
 ## WebSocket
 

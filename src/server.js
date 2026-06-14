@@ -19,6 +19,7 @@ const FIREBASE_WEB_API_KEY = process.env.FIREBASE_WEB_API_KEY || '';
 const FIREBASE_AUTH_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
 const FIREBASE_TOKEN_URL = 'https://securetoken.googleapis.com/v1/token';
 const FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL = process.env.FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL || '';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 const LEGACY_RULES_FILE = path.join(__dirname, '..', 'data', 'rules.json');
 
 const defaultRules = [
@@ -47,12 +48,12 @@ function initializeFirebaseAdmin() {
     return;
   }
 
-  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const serviceAccountJson = getFirebaseServiceAccountJson();
   const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
 
   if (serviceAccountJson) {
     initializeApp({
-      credential: cert(JSON.parse(serviceAccountJson)),
+      credential: cert(parseFirebaseServiceAccount(serviceAccountJson)),
     });
     return;
   }
@@ -68,6 +69,26 @@ function initializeFirebaseAdmin() {
   initializeApp({
     credential: applicationDefault(),
   });
+}
+
+function getFirebaseServiceAccountJson() {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    return process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  }
+
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    return Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+  }
+
+  return '';
+}
+
+function parseFirebaseServiceAccount(value) {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(`FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON: ${error.message}`);
+  }
 }
 
 initializeFirebaseAdmin();
@@ -506,8 +527,9 @@ const state = {
   currentUserId: '',
   currentUserEmail: '',
   currentTikTokUser: process.env.TIKTOK_USERNAME || '',
-  minecraftHost: process.env.MINECRAFT_HOST || '127.0.0.1',
-  minecraftPort: Number(process.env.MINECRAFT_PORT || 25575),
+  minecraftHost: '127.0.0.1',
+  minecraftPort: 25575,
+  minecraftPassword: '',
   rules: [],
   events: [],
 };
@@ -520,8 +542,31 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-app.use(cors());
+app.set('trust proxy', 1);
+app.use(cors(getCorsOptions()));
 app.use(express.json());
+
+function getCorsOptions() {
+  if (CORS_ORIGIN === '*') {
+    return { origin: true };
+  }
+
+  const allowedOrigins = CORS_ORIGIN
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  return {
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error('Origin is not allowed by CORS.'));
+    },
+  };
+}
 
 function sanitizeMinecraftName(value) {
   return String(value || 'unknown').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 16) || 'unknown';
@@ -669,8 +714,13 @@ function broadcast(message) {
 }
 
 function getMinecraftConfig(options = {}) {
-  const host = String(options.host || process.env.MINECRAFT_HOST || '127.0.0.1').trim();
-  const port = Number(options.port || process.env.MINECRAFT_PORT || 25575);
+  const host = String(options.host || state.minecraftHost || '127.0.0.1').trim();
+  const port = Number(options.port || state.minecraftPort || 25575);
+  const password = String(
+    options.password
+      ?? state.minecraftPassword
+      ?? '',
+  );
 
   if (!host) {
     throw new Error('Minecraft host is required.');
@@ -680,10 +730,14 @@ function getMinecraftConfig(options = {}) {
     throw new Error('Minecraft port must be a valid TCP port.');
   }
 
+  if (!password) {
+    throw new Error('Minecraft RCON password is required.');
+  }
+
   return {
     host,
     port,
-    password: process.env.MINECRAFT_RCON_PASSWORD || '',
+    password,
   };
 }
 
@@ -707,19 +761,21 @@ async function closeRconConnection() {
 async function getRconConnection(options = {}) {
   const nextConfig = getMinecraftConfig(options);
   const configKey = `${nextConfig.host}:${nextConfig.port}`;
+  const connectionKey = `${configKey}:${nextConfig.password}`;
 
-  if (rconConnection && rconConfig === configKey) {
+  if (rconConnection && rconConfig === connectionKey) {
     return rconConnection;
   }
 
   await closeRconConnection();
 
   rconConnection = await Rcon.connect(nextConfig);
-  rconConfig = configKey;
+  rconConfig = connectionKey;
 
   state.minecraftConnected = true;
   state.minecraftHost = nextConfig.host;
   state.minecraftPort = nextConfig.port;
+  state.minecraftPassword = nextConfig.password;
   addEvent('connected', {
     source: 'minecraft',
     detail: `Minecraft RCON connected to ${configKey}`,
@@ -1125,6 +1181,7 @@ app.post('/minecraft/command', requireAuth, requireVerifiedEmail, async (req, re
     const result = await executeMinecraftCommand(req.body.command, req.body.username, {
       host: req.body.minecraftHost,
       port: req.body.minecraftPort,
+      password: req.body.minecraftRconPassword,
     });
     res.json({ ok: true, ...result });
   } catch (error) {
@@ -1139,6 +1196,7 @@ app.post('/minecraft/connect', requireAuth, requireVerifiedEmail, async (req, re
     const connection = await getRconConnection({
       host: req.body.minecraftHost,
       port: req.body.minecraftPort,
+      password: req.body.minecraftRconPassword,
     });
     res.json({
       ok: true,
