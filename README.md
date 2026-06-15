@@ -25,6 +25,8 @@ CORS_ORIGIN=*
 FIREBASE_WEB_API_KEY=your_firebase_web_api_key
 FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 TIKTOK_USERNAME=demo_user
+EXAROTON_API_TOKEN=your_exaroton_api_token
+EXAROTON_SERVER_ID=your_exaroton_server_id
 ```
 
 Para Firebase necesitas:
@@ -34,6 +36,8 @@ Para Firebase necesitas:
 - Como alternativa puedes usar `FIREBASE_SERVICE_ACCOUNT_JSON` con el JSON completo en una variable de entorno.
 - En Render se recomienda usar `FIREBASE_SERVICE_ACCOUNT_JSON` o `FIREBASE_SERVICE_ACCOUNT_BASE64`, no una ruta local.
 - `CORS_ORIGIN`: usa `*` durante pruebas. En produccion puedes poner el dominio del frontend, o varios separados por coma.
+- `EXAROTON_API_TOKEN`: token de API de Exaroton. Tambien se puede enviar desde el frontend con el header `x-exaroton-token`.
+- `EXAROTON_SERVER_ID`: ID del servidor Exaroton que recibira comandos. Tambien se puede enviar desde el frontend con `serverId` o el header `x-exaroton-server-id`.
 
 No subas el JSON de service account al repo. El backend ya ignora `firebase-service-account*.json`.
 
@@ -52,6 +56,8 @@ Este repo incluye `render.yaml` para crear un Web Service en Render.
    - `FIREBASE_SERVICE_ACCOUNT_JSON` con el JSON completo de service account, o `FIREBASE_SERVICE_ACCOUNT_BASE64`
    - `FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL` si quieres redirigir luego de verificar correo
    - `TIKTOK_USERNAME`
+   - `EXAROTON_API_TOKEN`
+   - `EXAROTON_SERVER_ID`
    - `CORS_ORIGIN`
 
 Render asigna `PORT` automaticamente. No hace falta configurarlo.
@@ -80,11 +86,18 @@ flutter run --dart-define=BACKEND_URL=https://nivroy-tiki-tiki-backend.onrender.
 - `GET /rules`: reglas del usuario autenticado en Firestore.
 - `POST /rules`: crea o reemplaza una regla por trigger para el usuario autenticado.
 - `DELETE /rules/:id`: elimina una regla del usuario autenticado.
+- `GET /minecraft/exaroton/servers`: lista servidores Exaroton para obtener su `id`. Requiere `x-exaroton-token` si no existe `EXAROTON_API_TOKEN`.
+- `POST /minecraft/commands`: envia comandos al proveedor activo. Para Exaroton acepta `{ "provider": "exaroton", "serverId": "...", "command": "say hola" }` y el token por `x-exaroton-token`, `exarotonToken` o `.env`.
 - `POST /tiktok/connect`: conecta a TikTok Live.
 - `POST /tiktok/disconnect`: desconecta TikTok Live.
 - `GET /overlay/rules`: overlay HTML para agregar como Browser Source en TikTok Live Studio.
 
-Las rutas de `rules` y TikTok requieren `Authorization: Bearer <idToken>` y correo verificado.
+Las rutas de `rules`, Minecraft y TikTok requieren `Authorization: Bearer <idToken>` y correo verificado.
+
+Cuando hay una conexion Minecraft configurada, las reglas se ejecutan desde el backend al recibir eventos de TikTok. En Exaroton se usa la API REST oficial:
+
+- `GET /servers/` para listar servidores.
+- `POST /servers/{server}/command/` para ejecutar comandos.
 
 ## WebSocket
 

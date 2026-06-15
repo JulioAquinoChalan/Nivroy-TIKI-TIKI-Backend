@@ -19,6 +19,9 @@ const FIREBASE_AUTH_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
 const FIREBASE_TOKEN_URL = 'https://securetoken.googleapis.com/v1/token';
 const FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL = process.env.FIREBASE_EMAIL_VERIFICATION_CONTINUE_URL || '';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+const EXAROTON_API_BASE_URL = process.env.EXAROTON_API_BASE_URL || 'https://api.exaroton.com/v1';
+const EXAROTON_API_TOKEN = process.env.EXAROTON_API_TOKEN || '';
+const EXAROTON_SERVER_ID = process.env.EXAROTON_SERVER_ID || '';
 const LEGACY_RULES_FILE = path.join(__dirname, '..', 'data', 'rules.json');
 
 const defaultRules = [
@@ -540,6 +543,11 @@ const state = {
   currentUserId: '',
   currentUserEmail: '',
   currentTikTokUser: process.env.TIKTOK_USERNAME || '',
+  minecraftConnection: {
+    provider: EXAROTON_API_TOKEN && EXAROTON_SERVER_ID ? 'exaroton' : '',
+    exarotonToken: EXAROTON_API_TOKEN,
+    exarotonServerId: EXAROTON_SERVER_ID,
+  },
   rules: [],
   events: [],
 };
@@ -609,6 +617,126 @@ function getTikTokComment(data) {
   return String(data?.comment || data?.content || '').trim();
 }
 
+function getRequestHeader(req, name) {
+  return String(req.get(name) || '').trim();
+}
+
+function getExarotonToken(req = null, explicitToken = '') {
+  return String(
+    explicitToken
+      || req?.body?.exarotonToken
+      || req?.body?.token
+      || getRequestHeader(req, 'x-exaroton-token')
+      || state.minecraftConnection.exarotonToken
+      || EXAROTON_API_TOKEN
+      || '',
+  ).trim();
+}
+
+function getExarotonServerId(req = null, explicitServerId = '') {
+  return String(
+    explicitServerId
+      || req?.body?.serverId
+      || getRequestHeader(req, 'x-exaroton-server-id')
+      || state.minecraftConnection.exarotonServerId
+      || EXAROTON_SERVER_ID
+      || '',
+  ).trim();
+}
+
+function rememberExarotonConnection({ token = '', serverId = '' }) {
+  const nextToken = String(token || '').trim();
+  const nextServerId = String(serverId || '').trim();
+
+  if (nextToken) {
+    state.minecraftConnection.exarotonToken = nextToken;
+  }
+  if (nextServerId) {
+    state.minecraftConnection.exarotonServerId = nextServerId;
+  }
+  if (state.minecraftConnection.exarotonToken && state.minecraftConnection.exarotonServerId) {
+    state.minecraftConnection.provider = 'exaroton';
+  }
+}
+
+async function callExarotonApi(pathname, { method = 'GET', token, body } = {}) {
+  const apiToken = String(token || '').trim();
+  if (!apiToken) {
+    throw new Error('Exaroton API token is required.');
+  }
+
+  const response = await fetch(`${EXAROTON_API_BASE_URL}${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) {
+    throw new Error(data.error || `Exaroton API returned ${response.status}`);
+  }
+  return data.data;
+}
+
+function normalizeExarotonServer(server) {
+  return {
+    id: server.id,
+    name: server.name,
+    address: server.address,
+    status: server.status,
+    host: server.host,
+    port: server.port,
+    players: server.players,
+    software: server.software,
+    shared: server.shared === true,
+  };
+}
+
+async function listExarotonServers(token) {
+  const servers = await callExarotonApi('/servers/', { token });
+  return Array.isArray(servers) ? servers.map(normalizeExarotonServer) : [];
+}
+
+async function sendExarotonCommands({ token, serverId, command }) {
+  const targetServerId = String(serverId || '').trim();
+  if (!targetServerId) {
+    throw new Error('Exaroton server ID is required.');
+  }
+
+  const commands = getMinecraftCommands(command);
+  if (commands.length === 0) {
+    throw new Error('Minecraft command is required.');
+  }
+
+  const results = [];
+  for (const line of commands) {
+    const result = await callExarotonApi(
+      `/servers/${encodeURIComponent(targetServerId)}/command/`,
+      {
+        method: 'POST',
+        token,
+        body: { command: line },
+      },
+    );
+    results.push({ command: line, result });
+  }
+
+  return results;
+}
+
+async function sendMinecraftCommand(command, options = {}) {
+  const provider = String(options.provider || state.minecraftConnection.provider || '').trim().toLowerCase();
+  if (provider !== 'exaroton') {
+    throw new Error('No Minecraft command provider is configured.');
+  }
+
+  const token = options.exarotonToken || state.minecraftConnection.exarotonToken || EXAROTON_API_TOKEN;
+  const serverId = options.serverId || state.minecraftConnection.exarotonServerId || EXAROTON_SERVER_ID;
+  return sendExarotonCommands({ token, serverId, command });
+}
+
 function createRuleId(trigger) {
   return `${Date.now()}-${String(trigger).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
 }
@@ -618,6 +746,8 @@ function normalizeRule(input) {
   const trigger = String(input.trigger || '').trim();
   const command = getMinecraftCommands(input.command).join('\n');
   const target = String(input.target || trigger).trim();
+  const voiceEnabled = input.voiceEnabled === true;
+  const voiceMessage = String(input.voiceMessage || '').trim();
 
   if (!['gift', 'like', 'follow', 'member', 'share', 'chat'].includes(eventType)) {
     throw new Error('Rule event type is invalid.');
@@ -638,6 +768,8 @@ function normalizeRule(input) {
     command,
     target: target || trigger,
     enabled: input.enabled !== false,
+    voiceEnabled,
+    voiceMessage,
   };
 }
 
@@ -683,6 +815,11 @@ function addEvent(type, payload = {}) {
   state.events.unshift(event);
   state.events = state.events.slice(0, MAX_EVENTS);
   broadcast(event);
+  if (['gift', 'like', 'follow', 'member', 'share', 'chat'].includes(type)) {
+    runRulesForEvent(event).catch((error) => {
+      addEvent('error', { source: 'minecraft', detail: normalizeError(error) });
+    });
+  }
   return event;
 }
 
@@ -692,6 +829,50 @@ function broadcast(message) {
     if (client.readyState === client.OPEN) {
       client.send(data);
     }
+  }
+}
+
+function matchesRuleEvent(rule, event) {
+  if (!rule.enabled || rule.eventType !== event.type) {
+    return false;
+  }
+
+  const trigger = String(rule.trigger || '').trim().toLowerCase();
+  if (
+    !trigger
+    || ['like', 'follow', 'member', 'share'].includes(rule.eventType)
+  ) {
+    return true;
+  }
+
+  const detail = String(event.detail || '').trim().toLowerCase();
+  return detail === trigger || detail.includes(trigger);
+}
+
+function getCommandForEvent(command, event) {
+  const username = event.user || state.currentTikTokUser || 'unknown';
+  return String(command || '')
+    .replaceAll('{user}', username)
+    .replaceAll('{username}', username)
+    .replaceAll('{detail}', event.detail || '');
+}
+
+async function runRulesForEvent(event) {
+  if (!state.currentUserId || !state.minecraftConnection.provider) {
+    return;
+  }
+
+  const matchedRules = state.rules.filter((rule) => matchesRuleEvent(rule, event));
+  for (const rule of matchedRules) {
+    const command = getCommandForEvent(rule.command, event);
+    const results = await sendMinecraftCommand(command);
+    addEvent('command_sent', {
+      source: 'minecraft',
+      provider: state.minecraftConnection.provider,
+      ruleId: rule.id,
+      detail: `${rule.trigger} -> ${getMinecraftCommands(command).join(' | ')}`,
+      results,
+    });
   }
 }
 
@@ -820,6 +1001,8 @@ app.get('/health', (req, res) => {
     currentUserEmail: state.currentUserEmail,
     tiktokConnected: state.tiktokConnected,
     currentTikTokUser: state.currentTikTokUser,
+    minecraftProvider: state.minecraftConnection.provider,
+    minecraftServerId: state.minecraftConnection.exarotonServerId,
   });
 });
 
@@ -1011,6 +1194,55 @@ app.delete('/rules/:id', requireAuth, requireVerifiedEmail, async (req, res) => 
     detail: `Rule ${req.params.id} deleted`,
   });
   res.json({ ok: true, deleted: before !== state.rules.length });
+});
+
+app.get('/minecraft/exaroton/servers', requireAuth, requireVerifiedEmail, async (req, res) => {
+  try {
+    const token = getExarotonToken(req);
+    rememberExarotonConnection({ token });
+    res.json({ ok: true, servers: await listExarotonServers(token) });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: normalizeError(error) });
+  }
+});
+
+app.post('/minecraft/commands', requireAuth, requireVerifiedEmail, async (req, res) => {
+  try {
+    const provider = String(req.body.provider || 'exaroton').trim().toLowerCase();
+    const command = String(req.body.command || '');
+
+    if (provider !== 'exaroton') {
+      res.status(400).json({ ok: false, error: 'Minecraft command provider is invalid.' });
+      return;
+    }
+
+    const exarotonToken = getExarotonToken(req);
+    const serverId = getExarotonServerId(req);
+    rememberExarotonConnection({ token: exarotonToken, serverId });
+
+    const results = await sendMinecraftCommand(command, {
+      provider,
+      exarotonToken,
+      serverId,
+    });
+    addEvent('command_sent', {
+      source: 'minecraft',
+      provider,
+      detail: getMinecraftCommands(command).join(' | '),
+      results,
+    });
+
+    res.json({
+      ok: true,
+      provider,
+      serverId,
+      results,
+    });
+  } catch (error) {
+    const detail = normalizeError(error);
+    addEvent('error', { source: 'minecraft', detail });
+    res.status(400).json({ ok: false, error: detail });
+  }
 });
 
 app.post('/tiktok/connect', requireAuth, requireVerifiedEmail, async (req, res) => {
