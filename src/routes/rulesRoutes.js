@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth, requireVerifiedEmail } = require('../middleware/auth');
+const { addEvent } = require('../realtime/events');
 const {
   normalizeRule,
   removeRule,
@@ -10,6 +11,7 @@ const {
 const { state } = require('../state');
 const { normalizeError } = require('../utils/errors');
 const { disableCache } = require('../utils/http');
+const { getMinecraftCommands } = require('../utils/minecraft');
 
 const router = express.Router();
 
@@ -50,6 +52,24 @@ router.patch('/rules/:id/enabled', requireAuth, requireVerifiedEmail, async (req
   }
 
   res.json({ ok: true, rule });
+});
+
+router.post('/rules/:id/test-overlay', requireAuth, requireVerifiedEmail, (req, res) => {
+  const rule = state.rules.find((item) => item.id === req.params.id);
+  if (!rule) {
+    res.status(404).json({ ok: false, error: 'Rule not found.' });
+    return;
+  }
+
+  const command = String(req.body.command || rule.command || '');
+  addEvent('command_sent', {
+    source: 'minecraft',
+    provider: 'test',
+    ruleId: rule.id,
+    detail: getMinecraftCommands(command).join(' | '),
+    test: true,
+  });
+  res.json({ ok: true });
 });
 
 router.delete('/rules/:id', requireAuth, requireVerifiedEmail, async (req, res) => {

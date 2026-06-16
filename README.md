@@ -110,6 +110,7 @@ flutter run --dart-define=BACKEND_URL=https://nivroy-tiki-tiki-backend.onrender.
 - `POST /tiktok/connect`: conecta a TikTok Live.
 - `POST /tiktok/disconnect`: desconecta TikTok Live.
 - `GET /overlay/rules`: overlay HTML para agregar como Browser Source en TikTok Live Studio.
+- `GET /overlay/announcements`: overlay HTML que muestra por 3 segundos el mensaje de `Anunciar comando en chat`.
 
 Las rutas de `rules`, Minecraft y TikTok requieren `Authorization: Bearer <idToken>` y correo verificado.
 
