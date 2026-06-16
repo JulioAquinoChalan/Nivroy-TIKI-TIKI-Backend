@@ -2,6 +2,25 @@
 
 Backend Node.js + Express para autenticar usuarios, guardar reglas, conectar TikTok Live y servir el overlay.
 
+## Arquitectura
+
+El backend esta separado por responsabilidades dentro de `src/`:
+
+- `server.js`: punto de entrada. Carga variables, crea el servidor HTTP, conecta WebSocket y registra el runner de reglas.
+- `app.js`: configura Express, CORS, JSON y monta las rutas.
+- `config/`: variables de entorno y configuraciones compartidas.
+- `firebase/`: inicializacion de Firebase Admin.
+- `middleware/`: middlewares HTTP, como autenticacion y verificacion de correo.
+- `routes/`: endpoints agrupados por dominio (`auth`, `rules`, `minecraft`, `tiktok`, `overlay`, `health`).
+- `services/`: logica de negocio e integraciones externas, como Firebase Auth REST, TikTok Live, Exaroton y ejecucion de reglas.
+- `repositories/`: acceso a datos persistentes, actualmente Firestore para reglas.
+- `realtime/`: eventos en memoria y WebSocket.
+- `utils/`: helpers puros reutilizables.
+- `views/`: renderizadores HTML, actualmente el overlay.
+- `state.js`: estado en memoria compartido para eventos, usuario activo, conexion TikTok y proveedor Minecraft.
+
+Para agregar una funcionalidad nueva, crea primero la ruta en `routes/`, mueve la logica a `services/` y deja el acceso a Firestore o fuentes persistentes en `repositories/`. Evita poner logica de negocio directamente en `server.js` o en los handlers de rutas.
+
 ## Requisitos
 
 - Node.js 20 o superior
