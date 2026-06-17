@@ -114,6 +114,45 @@ flutter run --dart-define=BACKEND_URL=https://nivroy-tiki-tiki-backend.onrender.
 
 Las rutas de `rules`, Minecraft y TikTok requieren `Authorization: Bearer <idToken>` y correo verificado.
 
+## Formato de respuesta API
+
+Todas las rutas JSON responden con el mismo sobre:
+
+```json
+{
+  "success": true,
+  "message": "Operation completed successfully",
+  "data": {},
+  "error": null,
+  "meta": null,
+  "timestamp": "2026-06-17T12:00:00.000Z"
+}
+```
+
+Ejemplo paginado:
+
+```js
+res.status(200).json(ApiResponse.success({
+  message: 'Users retrieved',
+  data: users,
+  meta: {
+    page: 1,
+    limit: 20,
+    total: 150,
+    totalPages: 8,
+  },
+}));
+```
+
+Ejemplo de error:
+
+```js
+res.status(400).json(ApiResponse.badRequest({
+  message: 'Invalid request',
+  detail: 'Email is required.',
+}));
+```
+
 Cuando hay una conexion Minecraft configurada, las reglas se ejecutan desde el backend al recibir eventos de TikTok. En Exaroton se usa la API REST oficial:
 
 - `GET /servers/` para listar servidores.

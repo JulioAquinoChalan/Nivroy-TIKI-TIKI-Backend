@@ -1,6 +1,7 @@
 const cors = require('cors');
 const express = require('express');
 const { getCorsOptions } = require('./config/cors');
+const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const authRoutes = require('./routes/authRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const minecraftRoutes = require('./routes/minecraftRoutes');
@@ -21,6 +22,8 @@ function createApp() {
   app.use(rulesRoutes);
   app.use(minecraftRoutes);
   app.use(tiktokRoutes);
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
   return app;
 }

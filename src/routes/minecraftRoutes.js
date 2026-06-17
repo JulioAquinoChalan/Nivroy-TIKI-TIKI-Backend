@@ -1,4 +1,5 @@
 const express = require('express');
+const { asyncHandler } = require('../middleware/errorHandler');
 const { requireAuth, requireVerifiedEmail } = require('../middleware/auth');
 const { addEvent } = require('../realtime/events');
 const {
@@ -8,29 +9,39 @@ const {
   rememberExarotonConnection,
   sendMinecraftCommand,
 } = require('../services/minecraftService');
-const { normalizeError } = require('../utils/errors');
+const { ApiResponse } = require('../utils/ApiResponse');
+const { createHttpError, normalizeError } = require('../utils/errors');
 const { getMinecraftCommands } = require('../utils/minecraft');
 
 const router = express.Router();
 
-router.get('/minecraft/exaroton/servers', requireAuth, requireVerifiedEmail, async (req, res) => {
+router.get('/minecraft/exaroton/servers', requireAuth, requireVerifiedEmail, asyncHandler(async (req, res) => {
   try {
     const token = getExarotonToken(req);
     rememberExarotonConnection({ token });
-    res.json({ ok: true, servers: await listExarotonServers(token) });
+    const servers = await listExarotonServers(token);
+    res.status(200).json(ApiResponse.success({
+      message: 'Exaroton servers retrieved successfully',
+      data: { servers },
+      meta: {
+        page: 1,
+        limit: servers.length,
+        total: servers.length,
+        totalPages: 1,
+      },
+    }));
   } catch (error) {
-    res.status(400).json({ ok: false, error: normalizeError(error) });
+    throw createHttpError(400, error.message);
   }
-});
+}));
 
-router.post('/minecraft/commands', requireAuth, requireVerifiedEmail, async (req, res) => {
+router.post('/minecraft/commands', requireAuth, requireVerifiedEmail, asyncHandler(async (req, res) => {
   try {
     const provider = String(req.body.provider || 'exaroton').trim().toLowerCase();
     const command = String(req.body.command || '');
 
     if (provider !== 'exaroton') {
-      res.status(400).json({ ok: false, error: 'Minecraft command provider is invalid.' });
-      return;
+      throw createHttpError(400, 'Minecraft command provider is invalid.');
     }
 
     const exarotonToken = getExarotonToken(req);
@@ -49,17 +60,22 @@ router.post('/minecraft/commands', requireAuth, requireVerifiedEmail, async (req
       results,
     });
 
-    res.json({
-      ok: true,
-      provider,
-      serverId,
-      results,
-    });
+    res.status(200).json(ApiResponse.success({
+      message: 'Minecraft command sent successfully',
+      data: {
+        provider,
+        serverId,
+        results,
+      },
+    }));
   } catch (error) {
     const detail = normalizeError(error);
     addEvent('error', { source: 'minecraft', detail });
-    res.status(400).json({ ok: false, error: detail });
+    if (error.statusCode) {
+      throw error;
+    }
+    throw createHttpError(400, detail);
   }
-});
+}));
 
 module.exports = router;

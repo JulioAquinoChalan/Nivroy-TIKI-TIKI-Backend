@@ -155,7 +155,12 @@ function renderAnnouncementsOverlay(rules, uid = '') {
           params.set('uid', overlayUid);
         }
         const response = await fetch('/overlay/rules.json?' + params.toString(), { cache: 'no-store' });
-        setRules(await response.json());
+        const payload = await response.json();
+        const rules = Array.isArray(payload) ? payload : payload.data;
+        if (!Array.isArray(rules)) {
+          throw new Error('Invalid rules response.');
+        }
+        setRules(rules);
       } catch (error) {
         setRules(initialRules);
       }
